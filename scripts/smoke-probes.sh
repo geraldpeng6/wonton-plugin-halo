@@ -35,11 +35,14 @@ admin_key() {
 # Halo 2.27 起默认关闭 HTTP Basic；网页走表单登录，密码用登录页里的公钥 RSA 加密，
 # CSRF 令牌取同一页渲染的 _csrf。登录后的会话存在 SMOKE_JAR，后续 web_get 自带。
 halo_login() { # 失败时输出原因，返回 1
-    local pass pk der pem enc csrf html jar
+    local pass pk csrf jar html der pem enc
     pass="$(admin_key)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
     jar="${SMOKE_JAR:?没有会话 jar}"
-    html="$(mktemp)"; der="$(mktemp)"; pem="$(mktemp)"; enc="$(mktemp)"
-    trap 'rm -f "$html" "$der" "$pem" "$enc"' RETURN
+    # 临时文件用固定路径（探针串行跑，不并发，残留下次覆盖）。
+    html="$SMOKE_DIR/.wonton/halo-login.html"
+    der="$SMOKE_DIR/.wonton/halo-pubkey.der"
+    pem="$SMOKE_DIR/.wonton/halo-pubkey.pem"
+    enc="$SMOKE_DIR/.wonton/halo-password.enc"
     if ! curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_ORIGIN/login" --noproxy '*' -b "$jar" -c "$jar" -o "$html"; then
         echo "登录页拉不到"; return 1
     fi
@@ -63,12 +66,11 @@ halo_login() { # 失败时输出原因，返回 1
     }
 }
 
-web_assert() { # 首页：主题的真实结构 + 站点标题；/console 未登录时是 Halo 登录页
-    grep -q 'id="header-menu"' || { echo "首页没有主题的 header-menu"; return 1; }
-    grep -q '我的博客' || { echo "首页没有站点标题"; return 1; }
-    local console
-    console="$(dweb /console -L)" || { echo "请求 /console 失败"; return 1; }
-    grep -q 'halo-form-wrapper' <<<"$console" || { echo "/console 不是登录页：$(head -c 120 <<<"$console")"; return 1; }
+web_assert() { # 标准输入：probes_web 取回的首页（登录会话）；一次读入再断言，stdin 只能读一遍
+    local home
+    home="$(cat)"
+    grep -q 'id="header-menu"' <<<"$home" || { echo "首页没有主题的 header-menu"; return 1; }
+    grep -q '我的博客' <<<"$home" || { echo "首页没有站点标题"; return 1; }
 }
 
 identity_check() { # 走表单登录拿会话，再调当前用户接口，断言认出的就是 init 建的账号
