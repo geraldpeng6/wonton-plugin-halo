@@ -3,9 +3,7 @@
 # 单容器加内置 H2 数据库（上游官方 compose 的 H2 写法），全部数据在 /root/.halo2。
 # 网页走 Halo 自己的登录（sso: none）；管理员账号由 init 一次性服务调上游的初始化接口建好，
 # 密码由核心生成、主人在 App 插件详情里查看，第一次打开不用再走初始化向导。
-# MCP：上游只有 REST 接口，官方 MCP 是 Halo 的插件（halo-dev/plugin-mcp-server，GPL-3.0）。
-# 插件包把这个 JAR 一起带上（1.6 MiB，未改动），init 装进 Halo 并建好访问密钥；
-# Halo 的应用市场要出网，这里不走市场。
+# MCP：Halo 自带 MCP 服务端插件（halo 2.26+ 内置，默认启用）；init 确保它开着并建好访问密钥。
 name: halo
 
 services:
@@ -44,8 +42,6 @@ services:
     configs:
       - source: init_script
         target: /app/init.sh
-      - source: mcp_plugin
-        target: /seed/plugin-mcp-server-1.3.3.jar
     depends_on:
       halo:
         condition: service_healthy
@@ -54,8 +50,6 @@ services:
 configs:
   init_script:
     file: init.sh
-  mcp_plugin:
-    file: plugin-mcp-server-1.3.3.jar
 
 x-wonton:
   spec: "0.11"
@@ -81,17 +75,14 @@ x-wonton:
 
       写文章在后台完成，家人从网页就能看；Bot 也能帮你查文章、发文章。
 
-      想让博客标题、外观更合心意，登录后在后台的“系统 - 设置”里改。
+      管理员账号已建好：用户名是你的云吞用户名（下划线写成连字符），密码在插件详情页的“管理员密码”里查看。想改博客标题、外观，用这个账号登录后台，在“系统 - 设置”里改。
     en: |
       A blog for the household: write diary entries, travel notes and posts, and readers open a clean, typeset page.
 
       Writing happens in the console, family reads it on the web, and the bot can look up or publish posts for you.
 
-      To change the site title or look, sign in and edit it under System - Settings in the console.
+      The admin account is ready: the username is your Wonton username (underscores become hyphens), and the password is under “Admin PASSWORD” in the plugin details. Sign in with it to edit the site under System - Settings in the console.
   release_notes: { zh: 第一版。, en: First release. }
-  setup:
-    zh: 管理员账号已建好：用户名是你的云吞用户名（下划线会写成连字符），密码在插件详情页的“管理员密码”里查看；写文章用它登录后台。
-    en: "The admin account is ready: the username is your Wonton username (underscores become hyphens), and the password is under “Admin PASSWORD” in the plugin details. Sign in with it to write."
   webui:
     service: halo
     port: 8090

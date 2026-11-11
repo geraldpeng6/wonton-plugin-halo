@@ -8,16 +8,6 @@ Halo 标志
 
 Halo 是 halo-dev 的商标，本插件与其没有 affiliation 或背书关系。Halo 上游采用 GPL-3.0 许可证（本清单 license 字段即上游许可证），未随分发附全文，源码见 https://github.com/halo-dev/halo 。
 
-随包分发的 Halo 插件
-====================
-
-文件：plugin-mcp-server-1.3.3.jar
-来源：https://github.com/halo-dev/plugin-mcp-server/releases/download/v1.3.3/plugin-mcp-server-1.3.3.jar （sha256 ee8bd480356cf2ab524fc919592c9e3bcde97899d80d4caf93669b64df289d50，文件未做任何改动）
-版权与许可：GPL-3.0，作者 Halo（halo-dev），源码 https://github.com/halo-dev/plugin-mcp-server
-用途：Halo 官方的 MCP 服务端插件，init 一次性服务把它装进 Halo，给 Bot 提供管理文章的工具。
-
-GPL-3.0 全文见上游仓库 LICENSE：https://github.com/halo-dev/plugin-mcp-server/blob/main/LICENSE
-
 插件包自身
 ==========
 

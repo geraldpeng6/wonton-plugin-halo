@@ -32,6 +32,37 @@ admin_key() {
         | grep '^PASSWORD=' | cut -d= -f2-
 }
 
+# Halo 2.27 起默认关闭 HTTP Basic；网页走表单登录，密码用登录页里的公钥 RSA 加密，
+# CSRF 令牌取同一页渲染的 _csrf。登录后的会话存在 SMOKE_JAR，后续 web_get 自带。
+halo_login() { # 失败时输出原因，返回 1
+    local pass pk der pem enc csrf html jar
+    pass="$(admin_key)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
+    jar="${SMOKE_JAR:?没有会话 jar}"
+    html="$(mktemp)"; der="$(mktemp)"; pem="$(mktemp)"; enc="$(mktemp)"
+    trap 'rm -f "$html" "$der" "$pem" "$enc"' RETURN
+    if ! curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_ORIGIN/login" --noproxy '*' -b "$jar" -c "$jar" -o "$html"; then
+        echo "登录页拉不到"; return 1
+    fi
+    pk="$(grep -o 'const publicKey = "[^"]*";' "$html" | sed 's/.*const publicKey = "//;s/";$//;s/\\//g')"
+    csrf="$(grep -o 'name="_csrf" value="[^"]*"' "$html" | sed 's/.*value="//;s/"//')"
+    [[ -n "$pk" && -n "$csrf" ]] || { echo "登录页里没有公钥或 CSRF 令牌"; return 1; }
+    if ! printf '%s' "$pk" | base64 -d >"$der" 2>/dev/null ||
+        ! openssl pkey -pubin -inform DER -in "$der" -out "$pem" 2>/dev/null; then
+        echo "公钥解析不了"; return 1
+    fi
+    printf '%s' "$pass" | openssl pkeyutl -encrypt -pubin -inkey "$pem" 2>/dev/null | base64 | tr -d '\n' >"$enc" || {
+        echo "密码加密失败"; return 1
+    }
+    # curl 的 名字@文件 形式会读文件内容再做 URL 编码，密文里的 +/= 不会被改坏。
+    curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_ORIGIN/login" --noproxy '*' -b "$jar" -c "$jar" \
+        --data-urlencode "username=$(_halo_admin)" \
+        --data-urlencode "password@$enc" \
+        --data-urlencode "_csrf=$csrf" >/dev/null || true
+    web_get /apis/api.console.halo.run/v1alpha1/users/- | grep -q "\"name\":\"$(_halo_admin)\"" || {
+        echo "登录后当前用户不是管理员 $(_halo_admin)"; return 1
+    }
+}
+
 web_assert() { # 首页：主题的真实结构 + 站点标题；/console 未登录时是 Halo 登录页
     grep -q 'id="header-menu"' || { echo "首页没有主题的 header-menu"; return 1; }
     grep -q '我的博客' || { echo "首页没有站点标题"; return 1; }
@@ -40,12 +71,12 @@ web_assert() { # 首页：主题的真实结构 + 站点标题；/console 未登
     grep -q 'halo-form-wrapper' <<<"$console" || { echo "/console 不是登录页：$(head -c 120 <<<"$console")"; return 1; }
 }
 
-identity_check() { # 用管理员账号走 Basic 认证调当前用户接口，断言认出的就是 init 建的账号
-    local pass out user
-    pass="$(admin_key)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
-    out="$(web_get /apis/api.console.halo.run/v1alpha1/users/- -u "$(_halo_admin):$pass")" ||
+identity_check() { # 走表单登录拿会话，再调当前用户接口，断言认出的就是 init 建的账号
+    halo_login || return 1
+    local out user
+    out="$(web_get /apis/api.console.halo.run/v1alpha1/users/-)" ||
         { echo "当前用户接口失败：$(head -c 200 <<<"$out")"; return 1; }
-    user="$(jq -r '.metadata.name // empty' <<<"$out")"
+    user="$(jq -r '.user.metadata.name // empty' <<<"$out")"
     [[ "$user" == "$(_halo_admin)" ]] || { echo "当前用户是 $user，不是管理员 $(_halo_admin)：$(head -c 200 <<<"$out")"; return 1; }
 }
 
@@ -56,18 +87,18 @@ mcp_assert() { # halo_list_posts 的结果：正文里带 "Listed N posts"，结
 }
 
 data_write() { # 经 API 发一篇带随机标记的文章并发布，标记写进 $SMOKE_STATE
-    local pass marker name slug title out
-    pass="$(admin_key)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
+    local marker name slug title out
+    halo_login || return 1
     marker="smoke-$(date +%s)-$RANDOM"
     title="冒烟 $marker"
     slug="$marker"
-    out="$(web_get /apis/api.console.halo.run/v1alpha1/posts -u "$(_halo_admin):$pass" \
+    out="$(web_get /apis/api.console.halo.run/v1alpha1/posts \
         -H 'Content-Type: application/json' \
-        --data-binary "$(printf '{"post":{"spec":{"title":"%s","slug":"%s"},"apiVersion":"post.halo.run/v1alpha1","kind":"Post","metadata":{"generateName":"post-"}},"content":{"raw":"# %s","content":"<p>%s</p>","rawType":"markdown"}}' "$title" "$slug" "$marker" "$marker")")" ||
+        --data-binary "$(printf '{"post":{"spec":{"title":"%s","slug":"%s","allowComment":true,"deleted":false,"excerpt":{"autoGenerate":true},"pinned":false,"publish":false,"visible":"PUBLIC","priority":0,"tags":[]},"apiVersion":"post.halo.run/v1alpha1","kind":"Post","metadata":{"generateName":"post-"}},"content":{"raw":"# %s","content":"<p>%s</p>","rawType":"markdown"}}' "$title" "$slug" "$marker" "$marker")")" ||
         { echo "建文章失败：$(head -c 300 <<<"$out")"; return 1; }
     name="$(jq -r '.metadata.name // empty' <<<"$out")"
     [[ -n "$name" ]] || { echo "建文章没返回名字：$(head -c 300 <<<"$out")"; return 1; }
-    out="$(web_get "/apis/api.console.halo.run/v1alpha1/posts/$name/publish" -u "$(_halo_admin):$pass" -X PUT)" ||
+    out="$(web_get "/apis/api.console.halo.run/v1alpha1/posts/$name/publish" -X PUT)" ||
         { echo "发布文章失败：$(head -c 300 <<<"$out")"; return 1; }
     printf '%s\n' "$marker" >"$SMOKE_STATE"
 }

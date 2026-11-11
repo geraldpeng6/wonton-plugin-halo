@@ -1,9 +1,8 @@
 #!/bin/sh
 # 初始化 Halo（幂等，每次创建容器都会运行）：
 # 1. 建管理员账号（账号按云吞用户名，密码是核心生成的）；
-# 2. 装随插件包带来的 Halo 官方 MCP 插件（halo-dev/plugin-mcp-server）；
-# 3. 给 Bot 发一把 MCP 访问密钥，写到 /run/halo-mcp-token 交给核心保管。
-# 上游文档：https://docs.halo.run/ ；MCP 插件：https://github.com/halo-dev/plugin-mcp-server
+# 2. 确保 Halo 自带的 MCP 服务端插件开着，给 Bot 发一把 MCP 访问密钥，写到 /run/halo-mcp-token 交给核心保管。
+# 上游文档：https://docs.halo.run/ ；MCP 服务端：https://github.com/halo-dev/plugin-mcp-server（halo 2.26+ 内置）
 set -eu
 
 : "${HALO_URL:?核心没有注入 Halo 地址}"
@@ -20,9 +19,13 @@ ADMIN="$(printf '%s' "$WONTON_OWNER_NAME" | tr '_' '-')"
 if ! printf '%s' "$ADMIN" | grep -qE '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' || [ "${#ADMIN}" -lt 4 ]; then
     ADMIN="wonton-$ADMIN"
 fi
-AUTH="$ADMIN:$PW_VALUE"
 KEY_DISPLAY_NAME="wonton-agent"
 TOKEN_FILE=/run/halo-mcp-token
+COOKIE_JAR=/tmp/halo-cookies.txt
+LOGIN_PAGE=/tmp/halo-login.html
+KEY_DER=/tmp/halo-pubkey.der
+KEY_PEM=/tmp/halo-pubkey.pem
+PW_ENC=/tmp/halo-password.enc
 
 echo "Halo 管理员用户名：$ADMIN"
 
@@ -56,39 +59,64 @@ while :; do
     esac
 done
 
-# MCP 插件：已装且版本一致就跳过，没装就装，版本不同就升级。
-JAR=/seed/plugin-mcp-server-1.3.3.jar
-PLUGIN_VERSION=1.3.3
-PLUGIN_BASE="$HALO_URL/apis/api.console.halo.run/v1alpha1/plugins"
-version=""
-if body="$(curl -fsS -u "$AUTH" "$HALO_URL/api/v1alpha1/plugins/mcp-server" 2>/dev/null)"; then
-    version="$(printf '%s' "$body" | tr -d ' \n' | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)"
-fi
-case "$version" in
-    "$PLUGIN_VERSION")
-        echo "MCP 插件已是 $PLUGIN_VERSION"
-        ;;
-    "")
-        curl -fsS -u "$AUTH" -F "file=@$JAR" "$PLUGIN_BASE/install" >/dev/null
-        echo "MCP 插件已安装（$PLUGIN_VERSION）"
-        ;;
-    *)
-        curl -fsS -u "$AUTH" -F "file=@$JAR" "$PLUGIN_BASE/mcp-server/upgrade" >/dev/null
-        echo "MCP 插件已从 $version 升级到 $PLUGIN_VERSION"
-        ;;
-esac
+# 登录拿会话。Halo 2.27 起默认关闭 HTTP Basic（halo.security.basic-auth.disabled=true），
+# 表单登录的密码要用服务器在登录页里给的公钥做 RSA 加密（浏览器端由 JSEncrypt 做，这里用 openssl），
+# 还要带上登录页渲染的 CSRF 令牌。/apis/** 不做 CSRF 检查，登录后才用会话 Cookie。
+# 已初始化但密码对不上时（数据还在、密钥被换），如实报错，让用户删数据重装。
+login() {
+    rm -f "$COOKIE_JAR"
+    curl -fsS -c "$COOKIE_JAR" -o "$LOGIN_PAGE" "$HALO_URL/login" || return 1
+    public_key="$(grep -o 'const publicKey = "[^"]*";' "$LOGIN_PAGE" | sed 's/.*const publicKey = "//;s/";$//;s/\\//g')"
+    csrf="$(grep -o 'name="_csrf" value="[^"]*"' "$LOGIN_PAGE" | sed 's/.*value="//;s/"//')"
+    [ -n "$public_key" ] && [ -n "$csrf" ] || return 1
+    printf '%s' "$public_key" | base64 -d >"$KEY_DER" 2>/dev/null || return 1
+    openssl pkey -pubin -inform DER -in "$KEY_DER" -out "$KEY_PEM" 2>/dev/null || return 1
+    printf '%s' "$PW_VALUE" | openssl pkeyutl -encrypt -pubin -inkey "$KEY_PEM" 2>/dev/null |
+        base64 | tr -d '\n' >"$PW_ENC" || return 1
+    # curl 的 名字@文件 形式会读文件内容再做 URL 编码，密文里的 +/= 不会被改坏。
+    curl -fsS -b "$COOKIE_JAR" -c "$COOKIE_JAR" -o /dev/null \
+        --data-urlencode "username=$ADMIN" \
+        --data-urlencode "password@$PW_ENC" \
+        --data-urlencode "_csrf=$csrf" \
+        "$HALO_URL/login" || return 1
+    logged_in
+}
 
-# 上游会记录期望状态：装完是停用的，这里打开。PUT 带 async:false 时等插件真正启动。
-curl -fsS -u "$AUTH" -H 'Content-Type: application/json' \
-    -X PUT -d '{"enable":true,"async":false}' "$PLUGIN_BASE/mcp-server/plugin-state" >/dev/null
+logged_in() {
+    curl -fsS -b "$COOKIE_JAR" "$HALO_URL/apis/api.console.halo.run/v1alpha1/users/-" 2>/dev/null |
+        grep -q "\"name\":\"$ADMIN\""
+}
+
+i=0
+while :; do
+    if login && logged_in; then
+        echo "管理员已登录"
+        break
+    fi
+    i=$((i + 1))
+    if [ "$i" -ge 10 ]; then
+        echo "登录失败：用注入的密码重试 10 次都没登上。若站点不是本插件初始化的（数据目录被复用），删除插件数据后重装。" >&2
+        exit 1
+    fi
+    echo "登录第 $i 次没成功，重试"
+    sleep "$((i * 2))"
+done
+
+# MCP 服务端是上游镜像自带的插件（halo 2.26+ 内置 mcp-server，默认启用），不用装。
+# 这里只确保它是开着的：用户在后台停用过的话，装 Bot 的前提就没了。PUT 带 async:false 等插件真正启动。
+curl -fsS -b "$COOKIE_JAR" -H 'Content-Type: application/json' \
+    -X PUT -d '{"enable":true,"async":false}' \
+    "$HALO_URL/apis/api.console.halo.run/v1alpha1/plugins/mcp-server/plugin-state" >/dev/null
 
 KEYS="$HALO_URL/apis/console.api.mcp.halo.run/v1alpha1/keys"
 
 token_valid() {
     [ -s "$TOKEN_FILE" ] || return 1
+    # Streamable HTTP 的 MCP 端点要求 Accept 同时含 application/json 和 text/event-stream，缺了会 4xx。
     code="$(curl -s -o /dev/null -w '%{http_code}' \
         -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
         -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
         -X POST \
         -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"init-probe","version":"0"}}}' \
         "$HALO_URL/mcp")" || code=000
@@ -106,20 +134,23 @@ find_key() { # 在密钥列表里找 wonton-agent 这把，输出它的 name（U
 if token_valid; then
     echo "MCP 访问密钥仍可用，沿用"
 else
+    # 插件刚启用时它的接口可能还没注册出来，给足重试并把失败原因打出来。
     i=0
     while :; do
         resp=""
-        if keys="$(curl -fsS -u "$AUTH" "$KEYS" 2>/dev/null)"; then
+        code="$(curl -s -o /tmp/keys.json -w '%{http_code}' -b "$COOKIE_JAR" "$KEYS" 2>/dev/null)" || code=000
+        if [ "$code" = "200" ]; then
+            keys="$(cat /tmp/keys.json)"
             name="$(find_key "$keys")"
             if [ -n "$name" ]; then
-                resp="$(curl -fsS -u "$AUTH" -X POST "$KEYS/$name/rotate" 2>/dev/null)" || resp=""
-                [ -n "$resp" ] && echo "已轮换 MCP 访问密钥"
+                resp="$(curl -fsS -b "$COOKIE_JAR" -X POST "$KEYS/$name/rotate" 2>/dev/null)" && echo "已轮换 MCP 访问密钥"
             else
-                resp="$(curl -fsS -u "$AUTH" -H 'Content-Type: application/json' -X POST \
+                resp="$(curl -fsS -b "$COOKIE_JAR" -H 'Content-Type: application/json' -X POST \
                     -d "{\"displayName\":\"$KEY_DISPLAY_NAME\",\"allowedTools\":[\"*\"],\"allowedIpRanges\":[]}" \
-                    "$KEYS" 2>/dev/null)" || resp=""
-                [ -n "$resp" ] && echo "已创建 MCP 访问密钥"
+                    "$KEYS" 2>/dev/null)" && echo "已创建 MCP 访问密钥"
             fi
+        else
+            echo "密钥接口返回 $code（插件可能在启动中）：$(head -c 200 /tmp/keys.json 2>/dev/null)"
         fi
         token="$(printf '%s' "$resp" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
         if [ -n "$token" ]; then
@@ -127,8 +158,8 @@ else
             break
         fi
         i=$((i + 1))
-        if [ "$i" -ge 5 ]; then
-            echo "发密钥失败：重试 5 次都没拿到 token" >&2
+        if [ "$i" -ge 15 ]; then
+            echo "发密钥失败：重试 15 次都没拿到 token" >&2
             exit 1
         fi
         sleep 2
