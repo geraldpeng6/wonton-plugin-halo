@@ -40,7 +40,7 @@ services:
       WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL:?核心没有注入邮箱}
       WONTON_APP_URL: ${WONTON_APP_URL:?核心没有注入插件网页地址}
       # 密钥的注入名带敏感词，交给 init 时改用短名字，脚本里不用碰这个长名字。
-      PASSWORD: ${WONTON_SECRET_ADMIN_PASSWORD:?核心没有注入管理员密码}
+      PASSWORD: ${WONTON_SECRET_ADMIN_KEY:?核心没有注入管理员密码}
     configs:
       - source: init_script
         target: /app/init.sh
@@ -91,7 +91,7 @@ x-wonton:
   release_notes: { zh: 第一版。, en: First release. }
   setup:
     zh: 管理员账号已建好：用户名是你的云吞用户名（下划线会写成连字符），密码在插件详情页的“管理员密码”里查看；写文章用它登录后台。
-    en: The admin account is ready: the username is your Wonton username (underscores become hyphens), and the password is under “Admin PASSWORD” in the plugin details. Sign in with it to write.
+    en: "The admin account is ready: the username is your Wonton username (underscores become hyphens), and the password is under “Admin PASSWORD” in the plugin details. Sign in with it to write."
   webui:
     service: halo
     port: 8090
@@ -105,7 +105,7 @@ x-wonton:
     headers:
       Authorization: "Bearer {secret:mcp_token}"
   secrets:
-    admin_PASSWORD:
+    admin_key:
       generate: { bytes: 32 }
       show_owner:
         label:

@@ -24,7 +24,7 @@ _container() { # <插件 id> <服务名>
     docker ps -a --format '{{.Names}}' "${args[@]}" | head -1
 }
 
-admin_password() {
+admin_key() {
     local cid
     cid="$(_container "$SMOKE_PLUGIN_ID" init)" || return 1
     [[ -n "$cid" ]] || return 1
@@ -42,7 +42,7 @@ web_assert() { # 首页：主题的真实结构 + 站点标题；/console 未登
 
 identity_check() { # 用管理员账号走 Basic 认证调当前用户接口，断言认出的就是 init 建的账号
     local pass out user
-    pass="$(admin_password)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
+    pass="$(admin_key)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
     out="$(web_get /apis/api.console.halo.run/v1alpha1/users/- -u "$(_halo_admin):$pass")" ||
         { echo "当前用户接口失败：$(head -c 200 <<<"$out")"; return 1; }
     user="$(jq -r '.metadata.name // empty' <<<"$out")"
@@ -57,7 +57,7 @@ mcp_assert() { # halo_list_posts 的结果：正文里带 "Listed N posts"，结
 
 data_write() { # 经 API 发一篇带随机标记的文章并发布，标记写进 $SMOKE_STATE
     local pass marker name slug title out
-    pass="$(admin_password)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
+    pass="$(admin_key)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
     marker="smoke-$(date +%s)-$RANDOM"
     title="冒烟 $marker"
     slug="$marker"
