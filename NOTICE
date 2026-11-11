@@ -1,29 +1,24 @@
-图标
-====
+Halo 标志
+=========
 
-`icon.svg` 为本仓库原创，按插件规范的线条风格手写，未用图片模型生成。从模板新建的插件换成自己的图标时，这里按实际情况重写。
+图标：icon.png
+来源：https://github.com/halo-dev/halo （仓库内 application/src/main/resources/static/images/logo.png，与 https://www.halo.run/upload/logo.png 同图）
+版权：Halo 项目（halo-dev）
+处理：官方 256×256 PNG 原样粘贴在按标志自身边缘取色的蓝色渐变底上（上 rgb(11,136,252) 到下 rgb(0,81,182)），填满四角的透明缺口，不改标志的图形、颜色和比例。
 
-许可证
-------
+Halo 是 halo-dev 的商标，本插件与其没有 affiliation 或背书关系。Halo 上游采用 GPL-3.0 许可证（本清单 license 字段即上游许可证），未随分发附全文，源码见 https://github.com/halo-dev/halo 。
 
-MIT License
+随包分发的 Halo 插件
+====================
 
-Copyright (c) 2026 Wonton plugin authors
+文件：plugin-mcp-server-1.3.3.jar
+来源：https://github.com/halo-dev/plugin-mcp-server/releases/download/v1.3.3/plugin-mcp-server-1.3.3.jar （校验：文件未做任何改动）
+版权与许可：GPL-3.0，作者 Halo（halo-dev），源码 https://github.com/halo-dev/plugin-mcp-server
+用途：Halo 官方的 MCP 服务端插件，init 一次性服务把它装进 Halo，给 Bot 提供管理文章的工具。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+GPL-3.0 全文见上游仓库 LICENSE：https://github.com/halo-dev/plugin-mcp-server/blob/main/LICENSE
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+插件包自身
+==========
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+除上述第三方素材外，本插件包以 MIT 许可证分发，全文见仓库 LICENSE。

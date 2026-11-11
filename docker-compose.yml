@@ -1,78 +1,122 @@
-# 示例插件：nginx 显示一个网页，向登录的人问好。改成自己的应用见 https://github.com/wontonapp/wonton-docs/blob/main/develop.md#写插件。
+# Halo：个人博客与建站。家人把日记、游记写成文章发在这里；Bot 经 Halo 官方 MCP 插件查询和管理文章。
+#
+# 单容器加内置 H2 数据库（上游官方 compose 的 H2 写法），全部数据在 /root/.halo2。
+# 网页走 Halo 自己的登录（sso: none）；管理员账号由 init 一次性服务调上游的初始化接口建好，
+# 密码由核心生成、主人在 App 插件详情里查看，第一次打开不用再走初始化向导。
+# MCP：上游只有 REST 接口，官方 MCP 是 Halo 的插件（halo-dev/plugin-mcp-server，GPL-3.0）。
+# 插件包把这个 JAR 一起带上（1.6 MiB，未改动），init 装进 Halo 并建好访问密钥；
+# Halo 的应用市场要出网，这里不走市场。
+name: halo
+
 services:
-  web:
-    # 镜像按摘要固定（多架构镜像写清单列表的摘要），标签只给人看。
-    image: nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
+  halo:
+    image: halohub/halo:2.27.2@sha256:a804c41779c9ee8b19465dda57081d58ae0bc4d3e49bece7f50cf42cf0366958
+    # 外部访问地址必填：主题里的文章链接、RSS 和通知都拿它拼绝对地址。
+    command: ["--halo.external-url=${WONTON_APP_URL:?核心没有注入插件网页地址}"]
     environment:
-      # 网关代登录：SSI 回显的 Remote-User 只信核心带来的。官方镜像启动时对 templates 目录里的
-      # *.template 做 envsubst，把下面的地址换进 nginx 配置（见 web/default.conf.template）。
-      WONTON_CORE_ADDRESS: ${WONTON_CORE_ADDRESS}
-    # 包里的文件经 configs 交给容器（核心在启动前写进去），不能用卷挂载。
-    configs:
-      - source: site
-        target: /etc/nginx/templates/default.conf.template
-      - source: page
-        target: /usr/share/nginx/html/index.html
-      - source: tokens
-        target: /usr/share/nginx/html/tokens.css
+      # 上游 compose 示例的写法（-Xmx256m -Xms256m）；根文件系统要写工作目录以外的临时文件，不设 read_only。
+      JVM_OPTS: "-Xms256m -Xmx256m"
+      TZ: ${TZ}
+    volumes:
+      # 工作目录：H2 数据库、附件、主题、插件都在里面；镜像默认 HALO_WORK_DIR=/root/.halo2。
+      - ${WONTON_APP_DATA:?核心没有注入插件数据目录}/halo2:/root/.halo2
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      # 上游 compose 同款：readiness 在应用就绪后才变 UP，不只是进程活着。
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8090/actuator/health/readiness"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
-      start_interval: 1s
+      start_period: 120s
+      start_interval: 2s
+
+  # 一次性服务：建管理员、同步站点标题、装 Halo 官方 MCP 插件、发访问密钥。
+  # 每次创建容器都会重新运行，脚本幂等（见 init.sh）。
+  init:
+    image: halohub/halo:2.27.2@sha256:a804c41779c9ee8b19465dda57081d58ae0bc4d3e49bece7f50cf42cf0366958
+    # 复用主镜像：curl、grep、sed 都有，不用再拉一个工具镜像，也不启动 JVM。
+    entrypoint: ["/bin/sh", "/app/init.sh"]
+    environment:
+      HALO_URL: http://halo:8090
+      WONTON_OWNER_NAME: ${WONTON_OWNER_NAME:?核心没有注入用户名}
+      WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL:?核心没有注入邮箱}
+      WONTON_APP_URL: ${WONTON_APP_URL:?核心没有注入插件网页地址}
+      # 密钥的注入名带敏感词，交给 init 时改用短名字，脚本里不用碰这个长名字。
+      PASSWORD: ${WONTON_SECRET_ADMIN_PASSWORD:?核心没有注入管理员密码}
+    configs:
+      - source: init_script
+        target: /app/init.sh
+      - source: mcp_plugin
+        target: /seed/plugin-mcp-server-1.3.3.jar
+    depends_on:
+      halo:
+        condition: service_healthy
+    restart: "no"
 
 configs:
-  site:
-    file: web/default.conf.template
-  page:
-    file: web/index.html
-  tokens:
-    file: web/tokens.css
+  init_script:
+    file: init.sh
+  mcp_plugin:
+    file: plugin-mcp-server-1.3.3.jar
 
 x-wonton:
-  spec: "0.6"
-  # 换成你自己的：反向域名形式，装上以后不能改。
-  id: app.example.hello
-  version: 0.1.1
+  spec: "0.11"
+  id: run.halo.halo
+  version: 0.1.0
   kind: app
-  title: { zh: 你好, en: Hello }
-  description: { zh: 向登录的人问好的示例网页, en: An example page that greets whoever is signed in }
-  icon: icon.svg
+  title: { en: Halo }
+  description:
+    zh: 像写日记一样写博客，把文章、游记和照片发成自己的网站
+    en: Write posts like a diary and publish them as your own blog
+  icon: icon.png
   notices: [NOTICE]
   screenshots: [screenshots/home.png]
-  author: { name: Example }
-  homepage: https://nginx.org
-  # 应用（这里是 nginx）的许可证；插件包自己的许可证写在仓库的 LICENSE 里。
-  license: BSD-2-Clause
+  author: { name: geraldpeng6 }
+  homepage: https://www.halo.run
+  license: GPL-3.0-only
   tags:
-    zh: [工具]
-    en: [Tools]
+    zh: [博客]
+    en: [Blog]
   about:
     zh: |
-      一个示例网页：登录以后，页面会向你问好。新建插件时可以照着改。
+      家里的博客：写日记、记游记、发照片，读者打开就是一页排好版的文章。
+
+      写文章在后台完成，家人从网页就能看；Bot 也能帮你查文章、发文章。
+
+      想让博客标题、外观更合心意，登录后在后台的“系统 - 设置”里改。
     en: |
-      An example page: once you are signed in, the page says hello. Copy it as a starting point for a new plugin.
-  release_notes: { zh: 名字和说明更新。, en: Product name and description update. }
+      A blog for the household: write diary entries, travel notes and posts, and readers open a clean, typeset page.
+
+      Writing happens in the console, family reads it on the web, and the bot can look up or publish posts for you.
+
+      To change the site title or look, sign in and edit it under System - Settings in the console.
+  release_notes: { zh: 第一版。, en: First release. }
+  setup:
+    zh: 管理员账号已建好：用户名是你的云吞用户名（下划线会写成连字符），密码在插件详情页的“管理员密码”里查看；写文章用它登录后台。
+    en: The admin account is ready: the username is your Wonton username (underscores become hyphens), and the password is under “Admin PASSWORD” in the plugin details. Sign in with it to write.
   webui:
-    service: web
-    port: 80
-    # 示例页回显网关注入的用户名，见 https://github.com/wontonapp/wonton-docs/blob/main/plugin-spec.md#网关代登录sso-proxy。
-    sso: proxy
-    proxy:
-      headers:
-        Remote-User: "{user}"
-  # 能放进侧边栏“我的应用”的页面，见 https://github.com/wontonapp/wonton-docs/blob/main/plugin-spec.md#应用页面tabs。放不放由用户决定。
-  tabs:
-    - id: home
-      title: { zh: 主页, en: Home }
-      icon: tabs/home.svg
-      icon_selected: tabs/home-fill.svg
-      path: /
-      # 这个页面没做适配，用默认的 inset：从状态栏下沿开始，页面不用管安全区。
-      # 想让内容从状态栏后面滚过，写 layout: edge-to-edge，并用 --wonton-inset-* 留出系统安全区的位置。
-  permissions: []
-  # 上游 nginx 官方镜像，amd64 和 arm64 都有；上游没写最低内存，按本机空闲实测取整（实测约 24M，取 64M）。
+    service: halo
+    port: 8090
+    # Halo 自带账号体系，网页用 Halo 自己的登录；博客页面家人打开就能看。
+    sso: none
+  mcp:
+    service: halo
+    port: 8090
+    path: /mcp
+    transport: streamable-http
+    headers:
+      Authorization: "Bearer {secret:mcp_token}"
+  secrets:
+    admin_PASSWORD:
+      generate: { bytes: 32 }
+      show_owner:
+        label:
+          zh: 管理员密码
+          en: Admin PASSWORD
+    mcp_token:
+      # Halo 自己签发的 MCP 访问密钥，init 写在 /run/halo-mcp-token，交给核心保管。
+      collect: { service: init, path: /run/halo-mcp-token }
+  permissions:
+    # 管理员账号按注入的用户名和邮箱建立。
+    - owner.identity
   requirements:
     arch: [amd64, arm64]
-    memory: 64M
+    memory: 512M
