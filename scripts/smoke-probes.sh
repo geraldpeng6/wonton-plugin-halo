@@ -1,5 +1,5 @@
-# shellcheck shell=bash
-# Halo 的冒烟探针。首页断言主题真实结构；身份用 init 建好的管理员走 Basic 认证调 Halo 当前用户接口；
+# shellcheck shell=bash disable=SC2034  # MCP_TOOL/MCP_ARGS 由冒烟套件读取
+# Halo 的冒烟探针。首页断言主题真实结构；身份表单登录后调 Halo 当前用户接口；
 # 数据经 API 发一篇文章，断言首页能看到、重装后还在。MCP 调 Halo MCP 插件的只读工具 halo_list_posts。
 
 # init 一次性服务推导管理员用户名的规则和 init.sh 保持一致：下划线换连字符，
