@@ -38,6 +38,10 @@ halo_login() { # 失败时输出原因，返回 1
     local pass pk csrf jar html der pem enc
     pass="$(admin_key)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
     jar="${SMOKE_JAR:?没有会话 jar}"
+    # jar 跨探针复用，前面可能已经登录过：已登录就直接用（这时 GET /login 会被 Halo 跳走，拿不到表单）。
+    if web_get /apis/api.console.halo.run/v1alpha1/users/- 2>/dev/null | grep -q "\"name\":\"$(_halo_admin)\""; then
+        return 0
+    fi
     # 临时文件用固定路径（探针串行跑，不并发，残留下次覆盖）。
     html="$SMOKE_DIR/.wonton/halo-login.html"
     der="$SMOKE_DIR/.wonton/halo-pubkey.der"
