@@ -1,61 +1,118 @@
-# shellcheck shell=bash
-# scripts/smoke.sh 的一项一项探测，跟着插件走。没写的项会 FAIL 并给出写法，不会默认放行。
-#
-# 变量别叫 state：shellcheck 把这份文件连着 probes.sh 一起分析，probes.sh 自己也读一个 dev.sh 提供的 state；
-# 子壳体函数（fn() ( … )）里给 state 赋值，SC2031 就报在 probes.sh 上，CI 红。
-#
-# 变量：SMOKE_WEB_URL 是应用的网页入口（套件已去尾斜杠，但可能带路径，比如 SSO 登录页）；
-#       拼 API 路径用 SMOKE_WEB_ORIGIN（只有 scheme://host:port，入口的路径不掺进来），别直接接在 SMOKE_WEB_URL 后面。
-#
-# 页面：web_assert 从标准输入读页面，命中的确是应用的真实页面时返回 0。
-# 身份：identity_check 只证明身份：用应用自己的“当前用户”接口断言认出的是用户管理员，不碰应用里的数据。
-#       数据断言（是否配置过、有几条、内容对不对）全部交给 data_write / data_check：冒烟第 1 项会先装升级
-#       起点写数据，身份探针再断言“数据目录是空的”就会红。接口回字段时也只看类型（如 configured 是布尔、
-#       nodes 是数字），值和条数留给 data_check。
-#       没有用户体系时写 IDENTITY_NA=1，并在 SMOKE_NOTE 里写原因。dweb / web_get 是带用户会话的请求助手，可继续走应用自己的登录链。
-#       SSO 登录跳转不用自己写表单逻辑：dweb --sso 会从清单 webui.path 的入口出发（没写就是 /），提交核心
-#       登录页的 JS 自动表单并跟完重定向，返回的页面已带应用的登录态。
-# 工具：MCP_TOOL 写一个只读工具名（可带插件前缀），MCP_ARGS 是 JSON 参数；mcp_assert 从标准输入读调用结果。
-#       要断言多个工具时改成写 mcp_check；调用前要备数据时写 before_mcp。
-# 通知房间：申请了 notify 的插件把通知交给核心，核心以核心账号发进和主人的“Wonton”私聊。
-#       探针以主人身份读这个房间：probes_owner_room_wait <超时秒> <要找的文字> 等到开始之后发来的、包含这段文字的
-#       消息就返回 0，超时列出看到的最新消息并返回非 0。要先把等待挂到后台再发通知，否则消息可能在等待开始前就到：
-#         room_wait() {
-#           local marker="probe-$RANDOM" url
-#           url="$(docker exec "wonton-$SMOKE_INSTANCE--${SMOKE_PLUGIN_ID//./-}--web" printenv WONTON_NOTIFY_URL)"
-#           probes_owner_room_wait 120 "$marker" & local pid=$!
-#           docker exec "wonton-$SMOKE_INSTANCE--${SMOKE_PLUGIN_ID//./-}--web" wget -q -O /dev/null \
-#             --header 'Content-Type: application/json' --post-data "{\"title\":\"$marker\"}" "$url"
-#           wait "$pid"
-#         }
-#       上面的 web 换成插件里能发 HTTP 的服务；wget 换成那个服务里有的客户端。
-# 数据：合并前要验证“升级/重装不丢用户数据”时写 data_write 和 data_check（两个都写才跑）：data_write 用随机标记写
-#       一条数据并把标记原样存进 $SMOKE_STATE，data_check 读回标记去应用里找，对不上就打印看到了什么并返回非 0。
-#       应用不存用户数据时写 DATA_NA=1（两项记 N/A）。
-# 装之前要准备（如先配出口代理）：写 before_install。
+# shellcheck shell=bash disable=SC2034  # MCP_TOOL/MCP_ARGS 由冒烟套件读取
+# Halo 的冒烟探针。首页断言主题真实结构；身份表单登录后调 Halo 当前用户接口；
+# 数据经 API 发一篇文章，断言首页能看到、重装后还在。MCP 调 Halo MCP 插件的只读工具 halo_list_posts。
 
-web_assert() { grep -q '你好'; }   # 示例页的标题
-
-identity_check() { # 页面回显的就是网关注入的用户名；示例页不存数据，也不拿数据判断身份
-  local page
-  page="$(dweb /)" || { echo "页面失败：$page"; return 1; }
-  grep -qF "你好，$SMOKE_OWNER" <<<"$page" || { echo "页面没回显用户 $SMOKE_OWNER：$(head -c 120 <<<"$page")"; return 1; }
+# init 一次性服务推导管理员用户名的规则和 init.sh 保持一致：下划线换连字符，
+# 不满足 Halo 的用户名规则（小写字母数字连字符、至少 4 位）就套 wonton- 前缀。
+_halo_admin() {
+    local admin="${SMOKE_OWNER:-}"
+    admin="$(printf '%s' "$admin" | tr '_' '-')"
+    if ! printf '%s' "$admin" | grep -qE '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$' || [ "${#admin}" -lt 4 ]; then
+        admin="wonton-$admin"
+    fi
+    printf '%s' "$admin"
 }
 
-# 数据：合并前要验证“升级/重装不丢用户数据”时写 data_write 和 data_check（两个都写才跑）：
-#   data_write 用随机标记写一条数据，把标记原样覆盖写进 $SMOKE_STATE（一个已建好的空文件，不是目录）；data_check 读回标记、去应用里找，
-#   找不到就打印看到了什么并返回非 0。
-# 应用不存用户数据时写 DATA_NA=1（两项记 N/A）。模板的示例页不存数据，所以这里是不适用。
-# 数据要写进插件容器时（Agent 插件的工作区标记等），容器名别自己拼：钩子契约里没有 SMOKE_SLUG，e2e 套件的
-# data_write 又跑在实例名导出之前，拼出来的名字缺段（No such container）；Bot 服务（清单声明了 bots）每个 Bot
-# 一组容器，名字还带 --<Bot 名> 后缀。按核心打的标签找，插件自带 smoke 和 e2e 套件两个运行环境都成立
-# （实例名没导出时按 SMOKE_BASE 的主机名第一段推）：
-#   _container() { # <插件 id> <服务名>：本实例里这个服务的容器
-#     local inst="${SMOKE_INSTANCE:-}" args=(--filter "label=wonton.plugin=$1" --filter "label=wonton.service=$2")
-#     if [[ -z "$inst" && -n "${SMOKE_BASE:-}" ]]; then
-#       inst="${SMOKE_BASE#http://}"; inst="${inst%%.*}"
-#     fi
-#     [[ -z "$inst" ]] || args+=(--filter "label=wonton.instance=${inst//-/}")
-#     docker ps --format '{{.Names}}' "${args[@]}" | head -1
-#   }
-export DATA_NA=1
+# 管理员密码是核心生成、注入给 init 容器的（secrets 不经任何接口返回）。
+# init 容器退出后配置还在，从容器环境里读。容器名按核心打的标签找，实例名缺了就从 SMOKE_BASE 推。
+_container() { # <插件 id> <服务名>
+    local inst="${SMOKE_INSTANCE:-}" args=(--filter "label=wonton.plugin=$1" --filter "label=wonton.service=$2")
+    if [[ -z "$inst" && -n "${SMOKE_BASE:-}" ]]; then
+        inst="${SMOKE_BASE#http://}"; inst="${inst%%.*}"
+    fi
+    [[ -z "$inst" ]] || args+=(--filter "label=wonton.instance=${inst//-/}")
+    docker ps -a --format '{{.Names}}' "${args[@]}" | head -1
+}
+
+admin_key() {
+    local cid
+    cid="$(_container "$SMOKE_PLUGIN_ID" init)" || return 1
+    [[ -n "$cid" ]] || return 1
+    docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+        | grep '^PASSWORD=' | cut -d= -f2-
+}
+
+# Halo 2.27 起默认关闭 HTTP Basic；网页走表单登录，密码用登录页里的公钥 RSA 加密，
+# CSRF 令牌取同一页渲染的 _csrf。登录后的会话存在 SMOKE_JAR，后续 web_get 自带。
+halo_login() { # 失败时输出原因，返回 1
+    local pass pk csrf jar html der pem enc
+    pass="$(admin_key)" || { echo "读不到管理员密码：init 容器不在？"; return 1; }
+    jar="${SMOKE_JAR:?没有会话 jar}"
+    # jar 跨探针复用，前面可能已经登录过：已登录就直接用（这时 GET /login 会被 Halo 跳走，拿不到表单）。
+    if web_get /apis/api.console.halo.run/v1alpha1/users/- 2>/dev/null | grep -q "\"name\":\"$(_halo_admin)\""; then
+        return 0
+    fi
+    # 临时文件用固定路径（探针串行跑，不并发，残留下次覆盖）。
+    html="$SMOKE_DIR/.wonton/halo-login.html"
+    der="$SMOKE_DIR/.wonton/halo-pubkey.der"
+    pem="$SMOKE_DIR/.wonton/halo-pubkey.pem"
+    enc="$SMOKE_DIR/.wonton/halo-password.enc"
+    if ! curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_ORIGIN/login" --noproxy '*' -b "$jar" -c "$jar" -o "$html"; then
+        echo "登录页拉不到"; return 1
+    fi
+    pk="$(grep -o 'const publicKey = "[^"]*";' "$html" | sed 's/.*const publicKey = "//;s/";$//;s/\\//g')"
+    csrf="$(grep -o 'name="_csrf" value="[^"]*"' "$html" | sed 's/.*value="//;s/"//')"
+    [[ -n "$pk" && -n "$csrf" ]] || { echo "登录页里没有公钥或 CSRF 令牌"; return 1; }
+    if ! printf '%s' "$pk" | base64 -d >"$der" 2>/dev/null ||
+        ! openssl pkey -pubin -inform DER -in "$der" -out "$pem" 2>/dev/null; then
+        echo "公钥解析不了"; return 1
+    fi
+    printf '%s' "$pass" | openssl pkeyutl -encrypt -pubin -inkey "$pem" 2>/dev/null | base64 | tr -d '\n' >"$enc" || {
+        echo "密码加密失败"; return 1
+    }
+    # curl 的 名字@文件 形式会读文件内容再做 URL 编码，密文里的 +/= 不会被改坏。
+    curl_t "$SMOKE_WEB_MAX_TIME" "$SMOKE_WEB_ORIGIN/login" --noproxy '*' -b "$jar" -c "$jar" \
+        --data-urlencode "username=$(_halo_admin)" \
+        --data-urlencode "password@$enc" \
+        --data-urlencode "_csrf=$csrf" >/dev/null || true
+    web_get /apis/api.console.halo.run/v1alpha1/users/- | grep -q "\"name\":\"$(_halo_admin)\"" || {
+        echo "登录后当前用户不是管理员 $(_halo_admin)"; return 1
+    }
+}
+
+web_assert() { # 标准输入：probes_web 取回的首页（登录会话）；一次读入再断言，stdin 只能读一遍
+    local home
+    home="$(cat)"
+    grep -q 'id="header-menu"' <<<"$home" || { echo "首页没有主题的 header-menu"; return 1; }
+    grep -q '我的博客' <<<"$home" || { echo "首页没有站点标题"; return 1; }
+}
+
+identity_check() { # 走表单登录拿会话，再调当前用户接口，断言认出的就是 init 建的账号
+    halo_login || return 1
+    local out user
+    out="$(web_get /apis/api.console.halo.run/v1alpha1/users/-)" ||
+        { echo "当前用户接口失败：$(head -c 200 <<<"$out")"; return 1; }
+    user="$(jq -r '.user.metadata.name // empty' <<<"$out")"
+    [[ "$user" == "$(_halo_admin)" ]] || { echo "当前用户是 $user，不是管理员 $(_halo_admin)：$(head -c 200 <<<"$out")"; return 1; }
+}
+
+MCP_TOOL=halo_list_posts
+MCP_ARGS='{}'
+mcp_assert() { # halo_list_posts 的结果：正文里带 "Listed N posts"，结构化内容里有 items
+    grep -q '"Listed ' <<<"$(cat)" || { echo "结果里没有 Listed：$(head -c 200)"; return 1; }
+}
+
+data_write() { # 经 API 发一篇带随机标记的文章并发布，标记写进 $SMOKE_STATE
+    local marker name slug title out
+    halo_login || return 1
+    marker="smoke-$(date +%s)-$RANDOM"
+    title="冒烟 $marker"
+    slug="$marker"
+    out="$(web_get /apis/api.console.halo.run/v1alpha1/posts \
+        -H 'Content-Type: application/json' \
+        --data-binary "$(printf '{"post":{"spec":{"title":"%s","slug":"%s","allowComment":true,"deleted":false,"excerpt":{"autoGenerate":true},"pinned":false,"publish":false,"visible":"PUBLIC","priority":0,"tags":[]},"apiVersion":"post.halo.run/v1alpha1","kind":"Post","metadata":{"generateName":"post-"}},"content":{"raw":"# %s","content":"<p>%s</p>","rawType":"markdown"}}' "$title" "$slug" "$marker" "$marker")")" ||
+        { echo "建文章失败：$(head -c 300 <<<"$out")"; return 1; }
+    name="$(jq -r '.metadata.name // empty' <<<"$out")"
+    [[ -n "$name" ]] || { echo "建文章没返回名字：$(head -c 300 <<<"$out")"; return 1; }
+    out="$(web_get "/apis/api.console.halo.run/v1alpha1/posts/$name/publish" -X PUT)" ||
+        { echo "发布文章失败：$(head -c 300 <<<"$out")"; return 1; }
+    printf '%s\n' "$marker" >"$SMOKE_STATE"
+}
+
+data_check() { # 从 $SMOKE_STATE 读标记，断言首页能看到这篇已发布的文章
+    local marker home
+    marker="$(cat "$SMOKE_STATE")"
+    home="$(dweb / -L)" || { echo "请求首页失败"; return 1; }
+    grep -q "$marker" <<<"$home" ||
+        { echo "首页看不到标记 $marker，开头：$(head -c 200 <<<"$home" | tr '\n' ' ')"; return 1; }
+}
