@@ -56,7 +56,7 @@ x-wonton:
   id: run.halo.halo
   version: 0.1.0
   kind: app
-  title: { en: Halo }
+  title: { zh: 个人博客（Halo）, en: Blog (Halo) }
   description:
     zh: 像写日记一样写博客，把文章、游记和照片发成自己的网站
     en: Write posts like a diary and publish them as your own blog
@@ -75,13 +75,17 @@ x-wonton:
 
       写文章在后台完成，家人从网页就能看；Bot 也能帮你查文章、发文章。
 
+      博客只有家里人能看：读者必须是能打开你家云吞的人，外网的陌生人进不来。
+
       管理员账号已建好：用户名是你的云吞用户名（下划线写成连字符），密码在插件详情页的“管理员密码”里查看。想改博客标题、外观，用这个账号登录后台，在“系统 - 设置”里改。
     en: |
       A blog for the household: write diary entries, travel notes and posts, and readers open a clean, typeset page.
 
       Writing happens in the console, family reads it on the web, and the bot can look up or publish posts for you.
 
-      The admin account is ready: the username is your Wonton username (underscores become hyphens), and the password is under “Admin PASSWORD” in the plugin details. Sign in with it to edit the site under System - Settings in the console.
+      Only your household can read the blog: readers must be able to open your Wonton; strangers from the public internet cannot get in.
+
+      The admin account is ready: the username is your Wonton username (underscores become hyphens), and the password is under “Admin password” in the plugin details. Sign in with it to edit the site under System - Settings in the console.
   release_notes: { zh: 第一版。, en: First release. }
   webui:
     service: halo
@@ -101,7 +105,7 @@ x-wonton:
       show_owner:
         label:
           zh: 管理员密码
-          en: Admin PASSWORD
+          en: Admin password
     mcp_token:
       # Halo 自己签发的 MCP 访问密钥，init 写在 /run/halo-mcp-token，交给核心保管。
       collect: { service: init, path: /run/halo-mcp-token }
